@@ -11,6 +11,7 @@ import time
 import MySQLdb
 import Queue
 import os
+import sys
 import datetime
 
 def timediff(timestart, timestop):
@@ -45,17 +46,16 @@ APP_SECRET = 'abcdefghijklmn' # app secret
 CALLBACK_URL = 'http://www.example.com/callback' # callback url
 expires_in =99999999999
 
-crawledUser = open('crawledUser','w') #记录已经抓取的uid
 userlist = []
 now = 0
 month =['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-messageFile = open('messageFile.txt','w')
 total = 0
 error = 0
-mysqlError = open('mysqlError.txt', 'w')
-urlError = open('urlError.txt', 'w')
 starttime = datetime.datetime.now()
 crawlTime = 0
+screenFile = sys.stdout
+#logFile = open('/home/ray/code/NewDB/LOG','w+')
+logFile = open('./LOG','w+')
 
 sp = threading.Semaphore(1) #信号量
 sp2 = threading.Semaphore(1) 
@@ -73,7 +73,6 @@ class ThreadCrawl(threading.Thread):
 		global sp, sp2, sp3
 		global total, error, starttime
 		global crawlTime
-
 		con = MySQLdb.connect(host='localhost', user='root',passwd='131',charset='utf8')
 		con.ping(True)
 
@@ -94,25 +93,45 @@ class ThreadCrawl(threading.Thread):
 
 		flag = True
 		ti = 0
+		
+		thisCrawl = 0
 		while sp.acquire() and now < len(userlist):
-			print flag
-			if sp3.acquire():
-				tmp = os.system( 'clear' )
-				nowtime = datetime.datetime.now()
-				print "Run Time: %s" % timediff(starttime, nowtime)
-				print "%0.4f%s\tnow:\t%d\ttot:\t%d" % ((now + 0.0)/len(userlist), '%', now, len(userlist))
-				print self.getName() + '\ttotal:' + str(total)
-				print 'crawlTime: ', crawlTime
-				if error != 0:
-					print 'ERROR!!!', str(error)
-			sp3.release()
-
 			if flag:
 				tu = userlist[now]
 				now += 1 
 				ti = tu % 10 #ti是当前用户的id的最后一位
 				flag = False
-			sp.release()
+
+			sys.stdout = screenFile
+			tmp = os.system( 'clear' )
+			nowtime = datetime.datetime.now()
+			print "Run Time: %s" % timediff(starttime, nowtime)
+			print "%0.4f%s\tnow:\t%d\ttot:\t%d" % ((now + 0.0)/len(userlist), '%', now, len(userlist))
+			print self.getName() + '\ttotal:' + str(total)
+			print 'crawlTime: ', crawlTime
+
+			ttime = nowtime - starttime
+			tlimit = (ttime.days * 24 + ttime.seconds / 3600 + 1) * 1000 - 50
+			thisLimit =(ttime.days * 24 + ttime.seconds / 3600 + 1) * 150 - 10
+			if thisCrawl > thisLimit:
+				print '\r%s Limit!wait %d seconds~~' % (self.getName(), 3600 - ttime.seconds%3600), #加一个,则不换行
+			if crawlTime > tlimit:
+				print '\rTotal Limit! wait %d seconds~~' % (3600 - ttime.seconds%3600), #加一个,则不换行
+			print 'ERROR: ', str(error)
+			sys.stdout = logFile
+			sp.release()	
+		
+			while thisCrawl > thisLimit:
+				nowtime = datetime.datetime.now()
+				ttime = nowtime - starttime
+				thisLimit =(ttime.days * 24 + ttime.seconds / 3600 + 1) * 150 - 10
+				time.sleep(1)
+		
+			while crawlTime > tlimit:
+				nowtime = datetime.datetime.now()
+				ttime = nowtime - starttime
+				tlimit = (ttime.days * 24 + ttime.seconds / 3600 + 1) * 1000 - 50
+				time.sleep(1)
 
 			sql = 'select min(id) from data%d where uid = %d' % (ti, tu)
 			tt = 1
@@ -132,24 +151,26 @@ class ThreadCrawl(threading.Thread):
 				print minData
 				if minData < '2012-11-00 00:00:00':
 					flag = True
-					print 'YESSSSSS!!!'
+					print '从数据库中读出的消息比11月的早，退出!!!'
 					continue
 
 			try:
 				messages = client.statuses.user_timeline.get(uid=tu, count=100, max_id = maxId)
-				print 'uid ', tu
-				print 'max_id ', maxId
-				print messages
+				#print messages
 			except:
 				error += 1
-				print self.getName(), ' HTTP ERROR!!', error
+				sys.stdout = screenFile
+				print self.getName() + ' HTTP ERROR!!' + str(error) + ' uid: ' +
+				str(tu) + ' max_id: ' + str(maxId)
+				crawlTime += 1
+				thisCrawl += 1
 				continue
 
 			crawlTime += 1
+			thisCrawl += 1
 			if len(messages['statuses']) < 100:
 				flag = True
-				print 'YESEEEEEEEEE!'
-				print len(messages['statuses'])
+				print '这次抓取到的消息数目为%d,少于100,退出!' % len(messages['statuses'])
 
 			for message in messages['statuses']:
 				total += 1
@@ -158,34 +179,25 @@ class ThreadCrawl(threading.Thread):
 				dt = "%s-%02d-%s %s" % (c[-4:], month.index(c[4:7]) +1, c[8:10], c[11:19] )
 				if dt < '2012-11-00 00:00:00':
 					flag = True
-					print 'YESOOOOOO!'
+					print '这次抓取到了%s,在11月之前的消息，退出！'
+					break
 				if 'deleted' in message:
 					message['reposts_count'] = -1
 				t = "insert ignore into data%d values(%d, %d,'%s', '%s', %d);\n" %(ti, message['id'], tu, message['text'].replace('\\','\\\\').replace('\'','\\\''), dt, message['reposts_count'])
 				print t
 				cur.execute(t)
-				con.commit()
-				
+			#	con.commit()
+			con.commit()
 
-			ttime = nowtime - starttime
-			tlimit = (ttime.days * 24 + ttime.seconds / 3600 + 1) * 1000 - 50
-			while crawlTime > tlimit:
-				nowtime = datetime.datetime.now()
-				ttime = nowtime - starttime
-				tlimit = (ttime.days * 24 + ttime.seconds / 3600 + 1) * 1000 - 50
-				print '\rwait %d seconds~~' % (3600 - ttime.seconds%3600), #加一个,则不换行
 		queue.task_done()
 
 ######以下为主程序######
 
-#建立和数据库系统的连接
 conn = MySQLdb.connect(host='localhost', user='root',passwd='131',charset='utf8')
 conn.ping(True)
 
-#获取操作游标
 cursor = conn.cursor()
 
-#选择数据库
 conn.select_db('nwb');
 
 cursor.execute("SET NAMES utf8")
@@ -197,14 +209,12 @@ conn.commit()
 
 for i in cursor.fetchall(): 
 	userlist.append(i[0])
-#userlist = userlist[820+95+120+50:]
-#userlist = userlist[userlist.index(2458773504):]
 
 queue = Queue.Queue()
 for i in range(10):
 	queue.put(i)
 
-for i in range(1):
+for i in range(10):
 	t = ThreadCrawl(i)
 	t.setDaemon(True)
 	t.start()
